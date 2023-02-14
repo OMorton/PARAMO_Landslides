@@ -1,5 +1,4 @@
 .libPaths("C:/Packages") ## Set up for working from home.
-
 setwd("G:/My Drive/TUoS/PARAMO/Landslides")
 
 ## Packages
@@ -8,6 +7,7 @@ library(tidyverse)
 library(rnaturalearth)
 library(terra)
 library(tidyterra)
+sf::sf_use_s2(F)
 
 library(viridis)
 

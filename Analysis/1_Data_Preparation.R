@@ -38,10 +38,6 @@ Antioquia <- rast("Data/Susceptibility/Antioquia/antioquia/w001001.adf")
 #Cesar <- rast("Data/Susceptibility/cesar/cesar/w001001.adf")
 
 ## Check the data
-Antioquia
-res(Antioquia)
-dim(Antioquia)
-plot(Antioquia)
 ggplot() + 
   geom_sf(data = Colombia, fill = "white") + 
   geom_spatraster(data = Antioquia, maxcell = 10000) +
@@ -56,15 +52,10 @@ crs(Antioquia)
 projection(Nat_roads)
 projection(Colombia)
 
-## Buffer the roads
-Nat_roads_150 <- st_buffer(Nat_roads, dist = 150)
-## Checked with large buffer
-plot(Nat_roads_150)
+
 
 ## transform this to the raster projection (reprojecting the raster takes time)
 RAW_Nat_road_Ras <- st_transform(Nat_roads, "+proj=tmerc +lat_0=4.59620041666667 +lon_0=-74.0775079166667 +k=1 
-                                              +x_0=1000000 +y_0=1000000 +ellps=GRS80 +units=m +no_defs")
-Nat_road_Ras <- st_transform(Nat_roads_150, "+proj=tmerc +lat_0=4.59620041666667 +lon_0=-74.0775079166667 +k=1 
                                               +x_0=1000000 +y_0=1000000 +ellps=GRS80 +units=m +no_defs")
 Colombia_Ras <- st_transform(Colombia, "+proj=tmerc +lat_0=4.59620041666667 +lon_0=-74.0775079166667 +k=1 
                                               +x_0=1000000 +y_0=1000000 +ellps=GRS80 +units=m +no_defs")
@@ -73,30 +64,49 @@ Dep_Ras <- st_transform(Departments, "+proj=tmerc +lat_0=4.59620041666667 +lon_0
 
 ## crop the roads to the raster extent
 ext(Antioquia)
-Nat_roads_Ant <- st_crop(Nat_road_Ras, c(xmin= 506175.805479698, xmax=1148375.25392544, ymin=1088718.54930205, ymax=1487211.22382904))
-plot(Nat_roads_Ant)
-st_length(RAW_Nat_road_Ras)
-mask1 <-mask(vect(RAW_Nat_road_Ras), vect(filter(Dep_Ras, NAME_1 == "Antioquia")))
-plot(mask1)
+Nat_roads_Ant <- st_crop(RAW_Nat_road_Ras, c(xmin= 506175.805479698, xmax=1148375.25392544, 
+                                             ymin=1088718.54930205, ymax=1487211.22382904))
+Roads_Ant_mask <-st_intersection(Nat_roads_Ant, filter(Dep_Ras, NAME_1 == "Antioquia"))
+
+## Length of all the roads in the department
+st_length(Roads_Ant_mask)
+st_length(Roads_Ant_mask) %>% sum()/1000 ## km
 
 ## Check
 ggplot() + 
   geom_sf(data = Colombia, fill = "white") + 
   geom_spatraster(data = Antioquia, maxcell = 10000) +
-  scale_fill_viridis(na.value = NA) + 
-  geom_sf(data = Nat_roads_Ant, aes(geometry = geometry, colour = as.factor(objectid)), fill = NA) +
+  scale_fill_viridis(na.value = NA,trans = 'reverse', option = "inferno") + 
+  geom_spatvector(data = Roads_Ant_mask, fill = NA) +
+  #geom_sf(data = Nat_roads_Ant, aes(geometry = geometry, colour = as.factor(objectid)), fill = NA) +
   theme_void() +
   theme(legend.position = "none")
 
-## Turn to spatvector
-vect_roads <- vect(Nat_roads_Ant)
-## get suscep for each geometry
-Suscep <- extract(Antioquia, vect_roads)
 
+## Buffer the roads
+Nat_roads_150 <- st_buffer(Roads_Ant_mask, dist = 150) %>% 
+  # make the road object 
+  st_union(by_feature = TRUE)
 
+## Checked with large buffer
+ggplot() + 
+  geom_sf(data = Colombia, fill = "white") + 
+  geom_spatraster(data = Antioquia, maxcell = 10000) +
+  scale_fill_viridis(na.value = NA,trans = 'reverse', option = "inferno") + 
+  geom_sf(data = Roads_Ant_mask, aes(geometry = geometry, colour = as.factor(objectid)), fill = NA) +
+  theme_void() +
+  theme(legend.position = "none")
 
-## Rasterizing fails
-d <- stars::st_rasterize(Nat_roads_Ant %>% mutate(road = 1) %>% dplyr::select(road, geometry))
-e <- rast(d)
-plot(e, col = "black")
-d$ID
+## Turn spatraster to sf object
+poly_Ant <- as.polygons(Antioquia)
+Spdf_Ant <- st_as_sf(poly_Ant)
+## already transformed so can just reset the CRS
+Spdf_Ant2 <- st_set_crs(Spdf_Ant, "+proj=tmerc +lat_0=4.59620041666667 +lon_0=-74.0775079166667 +k=1 
+                                              +x_0=1000000 +y_0=1000000 +ellps=GRS80 +units=m +no_defs")
+## Gte the suscep values within 150m of a road
+Roads_Ant_mask2 <-st_intersection(Spdf_Ant2, Nat_roads_150)
+st_write(Roads_Ant_mask2, "OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Road.shp")
+
+ggplot() + 
+  geom_sf(data = test, aes(fill = as.factor(SUSCEP), colour = as.factor(SUSCEP)))
+

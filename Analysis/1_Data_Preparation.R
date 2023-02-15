@@ -1,5 +1,6 @@
 .libPaths("C:/Packages") ## Set up for working from home.
 setwd("G:/My Drive/TUoS/PARAMO/Landslides")
+options(scipen=99)
 
 ## Packages
 library(sf)
@@ -108,5 +109,38 @@ Roads_Ant_mask2 <-st_intersection(Spdf_Ant2, Nat_roads_150)
 st_write(Roads_Ant_mask2, "OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Road.shp")
 
 ggplot() + 
-  geom_sf(data = test, aes(fill = as.factor(SUSCEP), colour = as.factor(SUSCEP)))
+  geom_sf(data = Roads_Ant_mask2, aes(fill = as.factor(SUSCEP), colour = as.factor(SUSCEP)))
+
+#### Summarising ####
+Suscep_Area <- data.frame(Suscep = Roads_Ant_mask2$SUSCEP, 
+                          codigo.via = Roads_Ant_mask2$codigo_via,
+                          area_m2 = as.vector(st_area(Roads_Ant_mask2))) %>%
+  mutate(Total = sum(area_m2))
+
+Suscep_Area %>% group_by(Suscep) %>% summarise(Prop = sum(area_m2)/sum(Suscep_Area$area_m2))
+
+## Suscep area by road
+ggplot(Suscep_Area, aes(area_m2, codigo.via, fill = as.character(Suscep))) +
+  geom_col() +
+  scale_fill_viridis_d(option = "inferno", direction = -1) +
+  guides(fill=guide_legend(title="Susceptibility")) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+## Roads
+ggplot() + 
+  geom_sf(data = filter(Departments, NAME_1 == "Antioquia")) +
+  geom_sf(data = Roads_Ant_mask2, aes(fill = as.factor(SUSCEP), colour = as.factor(SUSCEP)))  +
+  scale_colour_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  scale_fill_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+## Susceptibility
+ggplot() + 
+  geom_sf(data = Spdf_Ant2, aes(fill = SUSCEP)) +
+  geom_sf(data = Roads_Ant_mask2, fill = "black", colour = "black")  +
+  scale_fill_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
 

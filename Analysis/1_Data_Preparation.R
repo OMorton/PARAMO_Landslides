@@ -85,10 +85,24 @@ ggplot() +
   theme(legend.position = "none")
 
 
-## Buffer the roads
-Nat_roads_150 <- st_buffer(Roads_Ant_mask, dist = 150) %>% 
+## Roads have no area being simple line objects so we first need to make a road area this assumes a 20m wide road
+Nat_roads_15 <- st_buffer(Roads_Ant_mask, dist = 15) %>% 
   # uinionise by road id
   st_union(by_feature = TRUE)
+
+## Buffer the roads to get the area either side of the road that we will get the opportunity cost for.
+Nat_roads_165 <- st_buffer(Roads_Ant_mask, dist = 165) %>% 
+  # uinionise by road id
+  st_union(by_feature = TRUE)
+
+## Get the road edge area
+Road_edge_150 <- st_difference(st_union(Nat_roads_165), st_union(Nat_roads_15)) %>% st_sf()
+
+## Check plot
+ggplot() + 
+  geom_sf(data = dif, aes(geometry = geometry), fill = "chartreuse4") +
+  coord_sf(xlim = c(825000, 830000), ylim = c(1160000, 1163000), crs = CRS, datum = CRS) +
+  theme_void()
 
 ## Checked with large buffer
 ggplot() + 
@@ -105,9 +119,12 @@ Spdf_Ant <- st_as_sf(poly_Ant)
 ## already transformed so can just reset the CRS
 Spdf_Ant2 <- st_set_crs(Spdf_Ant, "+proj=tmerc +lat_0=4.59620041666667 +lon_0=-74.0775079166667 +k=1 
                                               +x_0=1000000 +y_0=1000000 +ellps=GRS80 +units=m +no_defs")
-## Gte the suscep values within 150m of a road
-Roads_Ant_mask2 <-st_intersection(Spdf_Ant2, Nat_roads_150)
-st_write(Roads_Ant_mask2, "OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Road.shp")
+## Get the suscep values within 150m of a road
+Roads_Ant_mask2 <-st_intersection(Spdf_Ant2, Nat_roads_165)
+Road_edge_Ant_mask2 <-st_intersection(Spdf_Ant2, Road_edge_150)
+
+st_write(Roads_Ant_mask2, "OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Road.shp", append=FALSE)
+st_write(Road_edge_Ant_mask2, "OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Roadedge.shp", append=FALSE)
 
 ggplot() + 
   geom_sf(data = Roads_Ant_mask2, aes(fill = as.factor(SUSCEP), colour = as.factor(SUSCEP)))

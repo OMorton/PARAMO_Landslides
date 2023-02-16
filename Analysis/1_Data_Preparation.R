@@ -1,6 +1,7 @@
 .libPaths("C:/Packages") ## Set up for working from home.
 setwd("G:/My Drive/TUoS/PARAMO/Landslides")
 options(scipen=99)
+source("Analysis/Functions/Functions.R")
 
 ## Packages
 library(sf)
@@ -86,7 +87,7 @@ ggplot() +
 
 ## Buffer the roads
 Nat_roads_150 <- st_buffer(Roads_Ant_mask, dist = 150) %>% 
-  # make the road object 
+  # uinionise by road id
   st_union(by_feature = TRUE)
 
 ## Checked with large buffer
@@ -117,7 +118,7 @@ Suscep_Area <- data.frame(Suscep = Roads_Ant_mask2$SUSCEP,
                           area_m2 = as.vector(st_area(Roads_Ant_mask2))) %>%
   mutate(Total = sum(area_m2))
 
-Suscep_Area %>% group_by(Suscep) %>% summarise(Prop = sum(area_m2)/sum(Suscep_Area$area_m2))
+Suscep_Sum <- Suscep_Area %>% group_by(Suscep) %>% summarise(Prop = sum(area_m2)/sum(Suscep_Area$area_m2))
 
 ## Suscep area by road
 ggplot(Suscep_Area, aes(area_m2, codigo.via, fill = as.character(Suscep))) +
@@ -127,6 +128,13 @@ ggplot(Suscep_Area, aes(area_m2, codigo.via, fill = as.character(Suscep))) +
   theme_minimal() +
   theme(legend.position = "bottom")
 
+ggplot(Suscep_Sum, aes(x= "", y = Prop, fill = as.character(Suscep))) +
+  geom_col() +
+  scale_fill_viridis_d(option = "inferno", direction = -1) +
+  coord_polar(theta = "y") +
+  guides(fill=guide_legend(title="Susceptibility")) +
+  theme_void()
+
 ## Roads
 ggplot() + 
   geom_sf(data = filter(Departments, NAME_1 == "Antioquia")) +
@@ -134,13 +142,12 @@ ggplot() +
   scale_colour_viridis_d("Susceptibility", option = "inferno", direction = -1) +
   scale_fill_viridis_d("Susceptibility", option = "inferno", direction = -1) +
   theme_minimal() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "right")
 
 ## Susceptibility
 ggplot() + 
-  geom_sf(data = Spdf_Ant2, aes(fill = SUSCEP)) +
-  geom_sf(data = Roads_Ant_mask2, fill = "black", colour = "black")  +
-  scale_fill_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  geom_spatraster(data = Antioquia, maxcell = 100000) +
+  scale_fill_viridis(na.value = NA,trans = 'reverse', option = "inferno") + 
   theme_minimal() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "none")
 

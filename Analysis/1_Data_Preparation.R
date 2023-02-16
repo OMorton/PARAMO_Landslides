@@ -1,7 +1,7 @@
 .libPaths("C:/Packages") ## Set up for working from home.
 setwd("G:/My Drive/TUoS/PARAMO/Landslides")
 options(scipen=99)
-source("Analysis/Functions/Functions.R")
+source("OM/Analysis/Functions/Functions.R")
 
 ## Packages
 library(sf)
@@ -30,7 +30,7 @@ ggplot() + geom_sf(data = Colombia) + geom_sf(data = NG_roads)
 Antioquia <- rast("Data/Susceptibility/Antioquia/antioquia/w001001.adf")
 #Arauca <- rast("Data/Susceptibility/arauca/arauca/w001001.adf")
 #Atlantico <- rast("Data/Susceptibility/atlantico/atlantico/w001001.adf")
-#Bolivar <- raster("Data/Susceptibility/bolivar/bolivar/w001001.adf")
+Bolivar <- rast("Data/Susceptibility/bolivar/bolivar/w001001.adf")
 #Boyaca <- rast("Data/Susceptibility/boyaca/boyaca/w001001.adf")
 #Caldas <- rast("Data/Susceptibility/caldas/caldas/w001001.adf")
 #Caqueta <- rast("Data/Susceptibility/caqueta/caqueta/w001001.adf")

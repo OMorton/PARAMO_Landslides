@@ -148,6 +148,7 @@ ggplot(Landuse_sum, aes(n, Cover, fill = Cover)) +
   geom_col() +
   scale_fill_manual(values = c("darkgreen", "chartreuse4", "grey25", "tomato", "dodgerblue")) +
   facet_wrap(~SUSCEP, scales = "free_x") +
+  xlab("Area (m2)") +
   theme_minimal() +
   theme(legend.position = "none", axis.title.y = element_blank())
 
@@ -222,13 +223,10 @@ ggplot(SUSCEP_by_Cost, aes(SUSCEP, n, fill = Cost_band)) +
   scale_fill_manual(values = c("tomato", "chartreuse3", "yellow3")) +
   xlab("Landslide susceptibility") +
   ylab("Total area (m2)") +
-  theme_minimal() +
+  theme_minimal(base_size = 14) +
   theme(legend.position = "bottom", legend.title = element_blank())
 
 
-for_plotting <- rbind(Road_Edge_LandUseCost %>% mutate(SUSCEP = 1), Road_Edge_LandUseCost %>% mutate(SUSCEP = 2),
-                      Road_Edge_LandUseCost %>% mutate(SUSCEP = 3), Road_Edge_LandUseCost %>% mutate(SUSCEP = 4),
-                      Road_Edge_LandUseCost %>% mutate(SUSCEP = 5))
 ggplot() + 
   geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = "white") + 
   geom_sf(data = Roads_Ant_mask , aes(geometry = geometry), colour = "black") +
@@ -261,3 +259,49 @@ ggplot() +
   scale_fill_viridis_d("Susceptibility", option = "inferno", direction = -1) +
   theme_void() +
   theme(legend.title = element_blank(), legend.position = "bottom")
+
+
+#### Prioritizing specific projects or low cost - high susceptibility areas ####
+
+## So the 6203 has the highest average susceptibility score of 3.68 so for this example we will
+## assume that is a necessary project
+Road_ave_SUSCEP <- Roads_Ant_mask2 %>% as.data.frame() %>% 
+  mutate(Road_and_buffer_area = as.vector(st_area(Roads_Ant_mask2)),
+         Road_and_buffer_area_SUSCEP = Road_and_buffer_area*SUSCEP) %>%
+  group_by(codigo_via) %>%
+  summarise(Average_SUSCEP_m2 = sum(Road_and_buffer_area_SUSCEP) / sum(Road_and_buffer_area)) %>%
+  arrange(Average_SUSCEP_m2)
+
+## Visualise the road
+ggplot() + 
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia")) + 
+  geom_sf(data = Roads_Ant_mask2, 
+          aes(geometry = geometry)) +
+  geom_sf(data = filter(Roads_Ant_mask2, codigo_via == 6203), 
+          aes(geometry = geometry), fill = "red", colour = "red") +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+Proj_6203 <- st_intersection(filter(Roads_Ant_mask2, codigo_via == 6203), Road_Edge_LandUseCost) %>% 
+  st_make_valid()
+
+## 114km of road
+Length_6203 <- st_length(filter(Roads_Ant_mask, codigo_via == 6203)) %>% sum() /1000
+
+## Using Nelsons costs prices for a small road based off 2017 prices
+as.vector(Length_6203) * 650262 # $74,128,819 to replace the road.
+
+Proj_6203 %>% filter(is.na(Annual_opp_cost)) %>% distinct(Cover)
+
+ggplot() + 
+  #geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = "white") + 
+  #geom_sf(data = Roads_Ant_mask , aes(geometry = geometry), colour = "black") +
+  geom_sf(data = filter(Proj_6203), 
+          aes(geometry = geometry, fill = as.factor(Net_USD_m2)), colour = NA) +
+  scale_fill_manual(values = c("chartreuse3", "tomato", "grey"),
+                    labels = c("Low", "High", "Water/grassland/forest")) +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+## Annual opportunity cost $3,688,812
+Proj_6203 %>% as.data.frame() %>% filter(!is.na(Annual_opp_cost)) %>% summarise(sum(Annual_opp_cost))

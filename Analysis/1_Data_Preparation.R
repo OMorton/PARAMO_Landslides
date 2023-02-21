@@ -123,7 +123,7 @@ Spdf_Ant2 <- st_set_crs(Spdf_Ant, "+proj=tmerc +lat_0=4.59620041666667 +lon_0=-7
 Roads_Ant_mask2 <-st_intersection(Spdf_Ant2, Nat_roads_165)
 Road_edge_Ant_mask2 <-st_intersection(Spdf_Ant2, Road_edge_150)
 
-st_write(Roads_Ant_mask2, "OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Road.shp", append=FALSE)
+#st_write(Roads_Ant_mask2, "OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Road.shp", append=FALSE)
 st_write(Road_edge_Ant_mask2, "OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Roadedge.shp", append=FALSE)
 
 ggplot() + 

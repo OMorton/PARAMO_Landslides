@@ -20,7 +20,7 @@ Departments <- st_read('Data/COL_adm/COL_adm1.shp')
 Roads_Ant_mask2 <- st_read("OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Road.shp", quiet = TRUE)
 Road_edge_Ant_mask2 <- st_read("OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Roadedge.shp", quiet = TRUE)
 Opp_costs <- data.table::fread('Data/Nelson_Grima/Opp_costs/Opp_costs.csv')
-Nat_roads <- st_read('Data/National roads/RedVial_OD_5.shp')
+Nat_roads <- st_read('Data/National roads/RedVial_OD_5.shp', quiet = TRUE)
 
 
 CRS <-  "+proj=tmerc +lat_0=4.59620041666667 +lon_0=-74.0775079166667 +k=1 
@@ -261,7 +261,7 @@ ggplot() +
   theme(legend.title = element_blank(), legend.position = "bottom")
 
 
-#### Prioritizing specific projects or low cost - high susceptibility areas ####
+#### Prioritizing specific projects ####
 
 ## So the 6203 has the highest average susceptibility score of 3.68 so for this example we will
 ## assume that is a necessary project
@@ -305,3 +305,77 @@ ggplot() +
 
 ## Annual opportunity cost $3,688,812
 Proj_6203 %>% as.data.frame() %>% filter(!is.na(Annual_opp_cost)) %>% summarise(sum(Annual_opp_cost))
+
+
+#### low cost - high susceptibility areas ####
+
+## Issue is balancing maximizing the area protected with forests in the highest susceptibility areas but also 
+## accounting for the fact that lots of really small patches might not be any help at all.
+
+Productive_roadside_area <- sum(SUSCEP_by_Cost$n) # 382,224,910 m2 productive area 
+
+## 1 - The minimum
+## Protect all low cost high and very high susceptibility areas of road
+Min1_poly <- Road_Edge_LandUseCost %>%
+  mutate(Cost_band = case_when(Net_USD_m2 == 0.0075 ~ "Low",
+                               Net_USD_m2 == 0.0122 ~ "Medium",
+                               Net_USD_m2 == 0.047 ~ "High",
+                               TRUE ~ "CHECK MISSING COSTS")) %>% 
+  filter(SUSCEP %in% c("4", "5"), Cost_band == "Low")
+
+## 13% of the total surrounding road area
+st_area(Min1_poly) %>% sum() / Productive_roadside_area
+## 56.6% of the surrounding road area with 4 or 5 suscep
+st_area(Min1_poly) %>% sum() / filter(SUSCEP_by_Cost, SUSCEP %in% c(4, 5))$n %>% sum() 
+sum(Min1_poly$Annual_opp_cost)
+
+Buffer_edge <- st_union(Road_Edge_LandUseCost)
+
+ggplot() + 
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = "white") + 
+  geom_sf(data = Buffer_edge, aes(geometry = geometry), fill = NA, colour = "black") +
+  geom_sf(data = Roads_Ant_mask , aes(geometry = geometry), colour = "black") +
+  geom_sf(data = filter(Min1_poly), 
+          aes(geometry = geometry, fill = as.factor(Net_USD_m2)), colour = NA, fill = "chartreuse3") +
+  geom_sf(data = filter(Road_Edge_LandUseCost, Cover == "Forest"), 
+          aes(geometry = geometry), fill = "darkgreen", colour = NA) +
+  geom_sf(data = filter(Road_Edge_LandUseCost, Cover == "Water-based"), 
+          aes(geometry = geometry), fill = "dodgerblue", colour = NA) +
+  coord_sf(xlim = c(912000, 916000), ylim = c(1144000, 1146000), crs = CRS, datum = CRS)
+  
+
+#### Land allocation test ####
+
+## make a small test region with multiple polygons (various susceps and costs + some forest patches)
+Test_sf <- st_crop(Road_Edge_LandUseCost, c(xmin = 912000, xmax = 916000, 
+                                             ymin = 1144000, ymax = 1146000)) %>%
+  mutate(Cost_band = case_when(Net_USD_m2 == 0.0075 ~ "Low",
+                               Net_USD_m2 == 0.0122 ~ "Medium",
+                               Net_USD_m2 == 0.047 ~ "High",
+                               TRUE ~ "CHECK MISSING COSTS"))
+
+## Aims
+# 1. small reforested polygons in islands of expensive productivity is likely undesirable
+# 2. small small fragment gap between reforested area and forests should be bridged.
+unique(Test_sf$Cover)
+
+small <- Test_sf %>% filter(Patch_area_m2 < 6600 & Patch_area_m2 > 6500) %>% st_make_valid()
+The_rest <- Test_sf %>% filter(Patch_area_m2 > 6600 | Patch_area_m2 < 6500) %>% st_make_valid()
+g <- st_touches( small, The_rest)
+
+tes1 <- st_intersection(The_rest, small) %>% st_make_valid()
+
+ggplot() +
+  geom_sf(data = Test_sf, colour = NA, fill = "grey") +
+  geom_sf(data = slice(The_rest, 10), fill = "green") +
+  geom_sf(data = small, fill = "red")
+
+shp <- st_union(Test_sf)
+ggplot() +
+  geom_sf(data = shp, fill = "green")
+
+st_area(Test_sf) %>% sum()
+st_area(shp)
+
+elev <- elevatr::get_elev_raster(Ant_Landuse, src = "aws", crs = CRS, z = 12)
+elev_sf <- as(elev,'SpatialPolygonsDataFrame') %>% st_as_sf()

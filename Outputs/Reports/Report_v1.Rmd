@@ -1,0 +1,572 @@
+---
+title: "Antioquia Test Report"
+author: ""
+date: '2023-02-15'
+output: pdf_document
+---
+
+```{r setup, echo = FALSE}
+# rmarkdown::render("OM/Outputs/Reports/Report_v1.rmd", "pdf_document")
+knitr::opts_knit$set(root.dir = "G:/My Drive/TUoS/PARAMO/Landslides")
+```
+
+```{r, message=F, warning=F, echo = FALSE}
+.libPaths("C:/Packages")
+options(scipen=99)
+
+## Packages
+library(sf); library(tidyverse); library(rnaturalearth); library(terra)
+library(tidyterra); library(raster);library(viridis); library(ggpubr)
+
+sf::sf_use_s2(F)
+```
+
+# General workflow
+
+## Data tidying
+
+First read in the shapefile for the national roads and the raster for landslide susceptibility for the test region (Antioquia), also we get a few convenience shapefiles for the national and departmental borders.
+
+\
+```{r, message=F, warning=F}
+## Read in the road, susceptibility and NG economic data data
+Nat_roads <- st_read('Data/National roads/RedVial_OD_5.shp', quiet = TRUE)
+Colombia <- ne_countries(country = "Colombia", scale = "medium", returnclass = "sf")
+Departments <- st_read('Data/COL_adm/COL_adm1.shp', quiet = TRUE)
+Antioquia <- rast("Data/Susceptibility/Antioquia/antioquia/w001001.adf")
+Nat_roads <- st_read('Data/National roads/RedVial_OD_5.shp', quiet = TRUE)
+Opp_costs <- data.table::fread('Data/Nelson_Grima/Opp_costs/Opp_costs.csv')
+
+```
+
+\
+Reprojecting rasters is time consuming and in this case unnecessary as it is already projected to local tranverse Mercator projection, so we can just reproject the other shapefiles we will use.
+
+\
+```{r, message=F, warning=F}
+CRS <- "+proj=tmerc +lat_0=4.59620041666667 +lon_0=-74.0775079166667 +k=1 
+        +x_0=1000000 +y_0=1000000 +ellps=GRS80 +units=m +no_defs"
+Nat_roads <- st_transform(Nat_roads, CRS)
+Colombia_Ras <- st_transform(Colombia, CRS)
+Dep_Ras <- st_transform(Departments, CRS)
+```
+
+\
+Crop the raster to departments extent (not strictly necessary but saves memory by quickly making the raster object smaller) and then select only the road area within the departmental border. From this we can calculate the total national road length in the department is 1715.36km.
+
+\
+```{r, message=F, warning=F}
+Roads_Ant_mask <-st_intersection(Nat_roads, filter(Dep_Ras, NAME_1 == "Antioquia"))
+```
+
+\
+We need to establish a road area initially otherwise the forest checks and opportunity cost calculations would be based on the assumption we're cropping or reforesting the road network as well as the buffer. So we first create a road that is 30m wide (15m buffer either side of the central reservation). Then we create a larger buffer of 165m around the road. Then from this area we remove the 30m wide road area, thus leaving a 30m "gap" for the road and a 150m buffer on either side of it. This area represents both the area where we expect landslides to originate from and the area where we will subsequently calculate the opportunity costs for.
+
+\
+```{r, message=F, warning=F}
+## Roads have no area being simple line objects so we first need to make a road area 
+## this assumes a 30m wide road
+Nat_roads_15 <- st_buffer(Roads_Ant_mask, dist = 15) %>% 
+  st_union(by_feature = TRUE)
+
+## Buffer the roads to get the area either side of the road that we will get 
+## the opportunity cost for.
+Nat_roads_165 <- st_buffer(Roads_Ant_mask, dist = 165) %>% 
+  st_union(by_feature = TRUE)
+
+Road_edge_150 <- st_difference(st_union(Nat_roads_165), st_union(Nat_roads_15)) %>% st_sf()
+```
+
+```{r, message=F, warning=F, echo=F, fig.width = 8, fig.height = 4}
+## Road area
+Road_area_buffer <- ggplot() + 
+  geom_sf(data = Nat_roads_15, aes(geometry = geometry), fill = "black") +
+  coord_sf(xlim = c(825000, 830000), ylim = c(1160000, 1163000), crs = CRS, datum = CRS) +
+  theme_void()
+
+## Road edge buffer
+Road_edge_buffer <- ggplot() + 
+  geom_sf(data = Road_edge_150, aes(geometry = geometry), fill = "chartreuse4") +
+  coord_sf(xlim = c(825000, 830000), ylim = c(1160000, 1163000), crs = CRS, datum = CRS) +
+  theme_void()
+
+ggarrange(Road_area_buffer, Road_edge_buffer, nrow = 1, ncol = 2, labels = c("A.", "B."))
+```
+***Figure 1.*** *Road visualisation. A. Snapshot of the road network. B. Snapshow of the road edge buffer.* 
+
+\
+
+Convert the departmental susceptibility raster layer to an sf object and reset the CRS to as previous (no transformation necessary as it was already transformed). Then trim the susceptibility layer to 1) the road area plus the buffer for understanding the road and surrounding area risk (30m wide road + 150m buffer either side) and 2) just to the road edge buffer (just the 150m either side of the road) for calculated proportion of forested road side and the opportunity cost.
+
+\
+```{r, message=F, warning=F, eval=FALSE}
+Spdf_Ant <- as.polygons(Antioquia) %>% st_as_sf()
+Spdf_Ant2 <- st_set_crs(Spdf_Ant, CRS)
+
+Roads_Ant_mask2 <-st_intersection(Spdf_Ant2, Nat_roads_165)
+Road_edge_Ant_mask2 <-st_intersection(Spdf_Ant2, Road_edge_150)
+
+```
+
+```{r, message=F, warning=F, echo=FALSE}
+## Road + buffer area
+Roads_Ant_mask2 <- st_read("OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Road.shp", quiet = TRUE)
+Roads_Ant_mask2 <- st_set_crs(Roads_Ant_mask2, CRS)
+## Just buffer area either side of road
+Road_edge_Ant_mask2 <- st_read("OM/Outputs/Ant_Suscep_Roads/Ant_Suscep_Roadedge.shp", quiet = TRUE)
+Road_edge_Ant_mask2 <- st_set_crs(Road_edge_Ant_mask2, CRS)
+
+```
+
+## Summarising road risk 
+
+
+
+```{r, message=F, warning=F, echo=F, fig.width = 8, fig.height = 7}
+## Susceptibility
+Suscep_map <- ggplot() + 
+  geom_spatraster(data = Antioquia, maxcell = 100000) +
+  scale_fill_viridis(na.value = NA,trans = 'reverse', option = "inferno") + 
+  theme_void() +
+  theme(legend.position = "none")
+
+## Roads
+Road_map <- ggplot() + 
+  geom_sf(data = filter(Departments, NAME_1 == "Antioquia")) +
+  geom_sf(data = Roads_Ant_mask2, aes(fill = as.factor(SUSCEP), colour = as.factor(SUSCEP)))  +
+  scale_colour_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  scale_fill_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  theme_void() +
+  theme(legend.position = "bottom")
+
+## Roads buffer
+Road_edge <- ggplot() + 
+  geom_sf(data = Road_edge_Ant_mask2, aes(fill = as.factor(SUSCEP), colour = as.factor(SUSCEP)))  +
+  scale_colour_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  scale_fill_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  coord_sf(xlim = c(825000, 830000), ylim = c(1160000, 1163000), crs = CRS, datum = CRS) +
+  theme_void() +
+  theme(legend.position = "bottom")
+
+ggarrange(Suscep_map, 
+          ggarrange(Road_map, Road_edge, common.legend = TRUE, legend = "bottom", 
+                    labels = c("B.", "C."), ncol = 2), 
+          nrow = 2, ncol = 1, heights = c(1,.7), labels = c("A.", "", ""))
+```
+***Figure 2.*** *Department susceptibility to landslides. A. Whole department level susceptibility at 30 x 30m resolution. B. Susceptibility of the national road network and 150m of buffer area. C. Example snapshot of road edge Susceptibility.* 
+
+\
+The majority of the departments roads are medium risk (3) or higher (4 or 5), with 68.1% having medium susceptibility, 24.3% have high susceptibility and 0.2% have a very high susceptibility. For specific roads this risk is considerably higher with >60% of the 6203 having high susceptibility.
+
+\
+
+```{r, message=F, warning=F, echo=F, fig.width = 7, fig.height = 5}
+#### Summarising ####
+Suscep_Area <- data.frame(Suscep = Roads_Ant_mask2$SUSCEP, 
+                          codigo.via = Roads_Ant_mask2$codigo_via,
+                          area_m2 = as.vector(st_area(Roads_Ant_mask2))) %>%
+  mutate(Total = sum(area_m2))
+
+Suscep_Sum <- Suscep_Area %>% group_by(Suscep) %>% summarise(Prop = sum(area_m2)/sum(Suscep_Area$area_m2))
+
+## Suscep area by road
+Suscep_road_plt <- ggplot(Suscep_Area, aes(area_m2, codigo.via, fill = as.character(Suscep))) +
+  geom_col() +
+  scale_fill_viridis_d(option = "inferno", direction = -1) +
+  guides(fill=guide_legend(title="Susceptibility")) +
+  xlab("Sq. metres") + ylab("National road") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+Suscep_sum_plt <- ggplot(Suscep_Sum, aes(x= "", y = Prop, fill = as.character(Suscep))) +
+  geom_col() +
+  scale_fill_viridis_d(option = "inferno", direction = -1) +
+  coord_polar(theta = "y") +
+  guides(fill=guide_legend(title="Susceptibility")) +
+  theme_void()
+
+ggarrange(Suscep_road_plt, Suscep_sum_plt, nrow = 1, ncol = 2, labels = c("A.", "B."), widths = c(1, .7))
+
+```
+***Figure 3.*** *Department road susceptibility. A. Susceptibility of the buffered road network. B. Total susceptibility of the 150m buffered national road network.* 
+
+
+\newpage
+
+## Area to be potentially reforested 
+
+Read in the land-use raster and classify the range of landuses into broader landcover categories for subsequent use. Then crop this to the current departments area and save this for speed.
+
+\
+```{r, message=F, warning=F, eval=FALSE}
+## Read in landuse raster
+Landuse <- st_read('Data/Nelson_Grima/Mapa_LandUse_2017/
+                   Shape_E_ECCMC_Ver21_100K/E_ECCMC_Ver21_100K.shp')
+Landuse_Ras <- st_transform(Landuse, CRS) %>% st_make_valid()
+
+## Simplify the land raster
+Landuse_Ras2 <- Landuse_Ras %>% mutate(Cover = case_when( 
+  ## Water based so can't be costed up to be reforested
+  COBERTURA %in% c("Cuerpo de agua artificial", "Rio",
+                   "Zonas pantanosas", "Turberas",
+                   "Manglar de aguas mixohalinas", 
+                   "Vegetacion acuatica sobre cuerpos de agua",
+                   "Laguna", "Lago",
+                   "Estanques para acuicultura marina",
+                   "Canales", "Manglar", 
+                   "Laguna costera", "Pantano costero",
+                   "Manglar de aguas marinas") ~ "Water-based",
+  ## Misc types
+  COBERTURA %in% c("Zonas arenosas naturales", "Nubes",
+                   "Salitral", ## Saltpeter check meaning??
+                   "Sedimentos expuestos en bajamar", 
+                   "Playas", "N.A.", 
+                   "Campos de dunas") ~ "Misc",
+  ## exposed rock not viable for reforesting
+  COBERTURA %in% c("Afloramientos rocosos") ~ "Rock",
+  ## glaciers and snow not viable for reforesting
+  COBERTURA %in% c("Zonas de glaciares y nieves") ~ "Glaciers_snow",
+  ## Forest type so cant't be reforested
+  COBERTURA %in% c("Bosque fragmentado", "Subxerofitia",
+                   "Vegetacion secundaria", "Bosque",
+                   "Bosque abierto bajo", "Bosque denso alto",
+                   "Bosque abierto alto", "Plantacion forestal",
+                   "Bosque fragmentado con vegetacion secundaria",
+                   "Bosque de galeria y ripario", 
+                   "Bosque denso bajo",
+                   "Bosque mixto de guandal") ~ "Forest",
+  ## Grass shrubland - own ecosystem
+  COBERTURA %in% c("Herbazal abierto", "Arbustal abierto",
+                   "Herbazal denso", "Arbustal denso",
+                   "Arbustal abierto alto") ~ "Grass_Shrub",
+  ## Productive systems for opportunity costing
+  COBERTURA %in% c("Mosaico de cultivos y pastos", "Pastos",
+                   "Mosaico de pastos con espacios naturales",
+                   "Mosaico de cultivos, pastos y espacios naturales",
+                   "Plátano y Banano",
+                   "Bosque fragmentado con pastos y cultivos",
+                   "Mosaico de cultivos y espacios naturales",
+                   "Mosaico de pastos y espacios naturales",
+                   "Territorio artificializado", ## Check meaining
+                   "Cultivos permanentes", "Cultivos transitorios",
+                   "Mosaico de cultivos con espacios naturales" ,
+                   "Cafe", "Arroz", "Palma de aceite",
+                   "Papa", ## Check meaning
+                   "Caña") ~ "Productive",
+  COBERTURA == "Areas abiertas sin vegetacion" ~ "No_vegetation",
+  TRUE ~ "FAIL"))
+
+## Get the forest area that occurs in the department                                                              
+Ant_Landuse <- st_intersection(Landuse_Ras2, filter(Dep_Ras, NAME_1 == "Antioquia"))
+st_write(Ant_Landuse, "OM/Outputs/Ant_Forest/Ant_Landuse.shp", append=FALSE)                                         
+```
+
+
+```{r, message=F, warning=F, echo=FALSE, fig.width = 5, fig.height = 5}
+Ant_Landuse <- st_read("OM/Outputs/Ant_Landuse/Ant_Landuse.shp", quiet = TRUE)
+Ant_Landuse <- st_set_crs(Ant_Landuse, CRS)
+
+ggplot() +  
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = "white") + 
+  geom_sf(data = Ant_Landuse, aes(fill = Cover), colour = NA) +
+  geom_sf(data = Roads_Ant_mask2, fill = "black", colour = "black") +
+  scale_fill_manual(values = c("darkgreen", "chartreuse4", "grey75", "grey25", "tomato", "dodgerblue")) +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+```
+
+***Figure 4.*** *Department land-use cover.* 
+
+\
+
+We find that of the 150m road buffer area 32,498,653 m2 out of 453,045,169 m2 are currently forested. This represents only 7.2% of the total buffer area. The majority of the area around roads are productive landscapes of either pastures or cropping, these account for 382,224,910 m2 and are the focus of subsequent economic analyses. We don't include some land covers like bare rock, snow/glaciers or waterways as these can't be reforested for clear reasons. At this point we also don't include the various shrub type or grassland ecosystems as candidates for reforestation or afforestation as they represent there own distinct ecosystems.
+
+\
+```{r, message=F, warning=F}
+
+## Get the road edge landuse
+Road_Edge_LandUse <- st_intersection(Ant_Landuse, Road_edge_Ant_mask2) %>% st_sf()
+Road_Edge_LandUse <- st_make_valid(Road_Edge_LandUse) %>% st_union(by_feature = TRUE)
+
+A <- st_area(Road_Edge_LandUse) %>% sum() # 453,045,165 [m^2]
+
+Landuse_sum <- data.frame(Cover = Road_Edge_LandUse$Cover, SUSCEP = Road_Edge_LandUse$SUSCEP,
+                          Area = as.vector(Road_Edge_LandUse %>% st_area())) %>%
+  group_by(Cover, SUSCEP) %>% tally(Area)
+
+# 34,113,224 m2 forest
+# 382,224,910 m2 productive
+# 31,285,840 m2 water based
+# 1,051,063 m2 no veg
+# 4,370,128 m2 grass shrub
+B <- Landuse_sum %>% group_by(Cover) %>% tally(n) # 34,113,224 m2 forest
+
+```
+
+\
+
+```{r, message=F, warning=F, echo=F, fig.width = 8, fig.height = 8}
+Landuse_sum <- data.frame(Cover = Road_Edge_LandUse$Cover, SUSCEP = Road_Edge_LandUse$SUSCEP,
+                          Area = as.vector(Road_Edge_LandUse %>% st_area())) %>%
+  group_by(Cover, SUSCEP) %>% tally(Area)
+
+## Road edge landuse
+Road_edge_use_plot <- ggplot() + 
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = "white") + 
+  #geom_sf(data = Road_edge_Ant_mask2, aes(geometry = geometry), fill = "grey", colour = "grey") +
+  geom_sf(data = Road_Edge_LandUse, aes(geometry = geometry, fill = Cover), colour = NA) +
+  scale_fill_manual(values = c("darkgreen", "chartreuse4", "grey25", "tomato", "dodgerblue")) +
+  coord_sf(xlim = c(912000, 916000), ylim = c(1144000, 1146000), crs = CRS, datum = CRS) +
+  guides(fill=guide_legend(nrow=2,byrow=TRUE)) +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+## Road edge suscep
+Road_egde_suscep_plot <- ggplot() + 
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = "white") + 
+  #geom_sf(data = Road_edge_Ant_mask2, aes(geometry = geometry), fill = "grey", colour = "grey") +
+  geom_sf(data = Road_Edge_LandUse, aes(geometry = geometry, fill = as.factor(SUSCEP),), colour = NA) +
+  scale_fill_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  coord_sf(xlim = c(912000, 916000), ylim = c(1144000, 1146000), crs = CRS, datum = CRS) +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+## Landuse suscep types
+Land_use_suscep <- ggplot(Landuse_sum, aes(n, Cover, fill = Cover)) + 
+  geom_col() +
+  scale_fill_manual(values = c("darkgreen", "chartreuse4", "grey25", "tomato", "dodgerblue")) +
+  facet_wrap(~SUSCEP, scales = "free_x", ncol = 1) +
+  xlab("Area (m2)") +
+  theme_minimal() +
+  theme(legend.position = "none", axis.title.y = element_blank())
+
+ggpubr::ggarrange(Land_use_suscep, labels = c("A.", ""), ncol = 2, nrow = 1,
+          ggpubr::ggarrange(Road_edge_use_plot, Road_egde_suscep_plot, ncol = 1, labels = c("B.", "C.")))
+```
+***Figure 5.*** *Land use and susceptibility. A. Summary of the dominant land uses 150m either side of national roads for each susceptibility. B. Example area with land uses shown. C. Same area with landslide susceptibility shown.* 
+
+
+\newpage
+
+## Opportunity cost per area
+
+\
+We use the same opportunity cost data that Grima et al. (2020) used (see main text Table 3), however as and when more nuanced department level costs could be incorporated they would be added here.
+
+Changes in cost would be particularly relevant if markets or inputs have had large or clear changes over the last 5-years. Although more up to date costs/income should be sought regardless to account for inflation over the last 5-years.
+
+\
+```{r, message=F, warning=F}
+# Convert net USD per hectare to per m2
+Opp_costs <- Opp_costs %>% mutate(Net_USD_m2 = Net_USD_ha / 10000)
+```
+
+\
+Now the land use data has a myriad of crops and mosaic landscapes so we make the following assumptions going forward: 
+
+1. If the land is a mosaic of pasture and any other natural forest fragments or cultivation we assume the opportunity cost to be equal to if it was all pasture (as we cannot know whether the non pasture fragments cover 1% or 99% of the area - this approach therefore will purposely maximize costs).
+
+2. If the land is a mosaic of pasture and cultivation  (where the crop is not known) we assume the whole are to be Coffee as the crop with the greatest net value per ha (and greater than pasture).
+
+3. Similarly in cultivation and forest/natural fragment landscapes we assume the whole area to be coffee.
+
+4. If the exact crop is not known, it assumed to be coffee again - to maximize the possible opportunity cost. e.g. worst case scenario.
+
+A major issue with these assumptions is the coarse granularity the mosaic patches e.g. if a patch has both pasture and cultivation we assume the most profitable land use and thus that the whole patch is used for coffee. Generally, this is likely not to be the case, with the more common explanation being the patch is mostly pasture and a small area set aside for cultivation. This has quite significant implications for the cost analysis as the income from a hectare of cattle pasture is more than 6 times less than that of a hectare of coffee. Thus in some areas it is possible that we over estimate costs by up to 6 times.
+
+There are ways around this 1) Better data on land use detailing the exact crops and proportions of cultivated and pastured land in mosaic landscapes (potentially unlikely to exist at the scale we would need), or 2) we make some more relaxed assumptions based on local knowledge if we can broadly classify areas or whole departments as having a rough proportion of land in mosaics as pasture and a rough proportion as crops. E.g. generally 75% of the mosaic is pasture and 25% is cultivated we could then base the opportunity cost on this rather than purely crop (coffee) or 3) we could simulate the full range of scenarios 1 - 99% crops per area and then we have a range of possible costs that show how cheap it could be (best-case) versus how expensive it could be (worst case).
+
+\
+```{r, message=F, warning=F}
+Road_Edge_LandUseCost <- Road_Edge_LandUse %>% 
+  mutate(Opp_cost_product_match = case_when(
+    ## Cultivation (coffee)
+    COBERTURA %in% c("Mosaico de cultivos y pastos",
+                     "Mosaico de cultivos, pastos y espacios naturales",
+                     "Bosque fragmentado con pastos y cultivos",
+                     "Mosaico de cultivos y espacios naturales",
+                     "Mosaico de cultivos con espacios naturales",
+                     # unknown crop so assume coffee
+                     "Territorio artificializado",
+                     "Cultivos permanentes", "Cultivos transitorios") ~ "Coffee",
+    ## Pasture
+    COBERTURA %in% c("Mosaico de pastos con espacios naturales",
+                     "Pastos",
+                     "Mosaico de pastos y espacios naturales") ~ "Pasture",
+    ## Banana
+    COBERTURA %in% c("Plátano y Banano") ~ "Banana",
+    ## Coffee
+    COBERTURA %in% c("Cafe") ~ "Coffee",
+    ## Rice
+    COBERTURA %in% c("Arroz") ~ "Rice",
+    ## Oil palm
+    COBERTURA %in% c("Palma de aceite") ~ "Oil palm",
+    ## Native potato,
+    COBERTURA %in% c("Papa") ~ "Potato",
+    ## Sugar cane
+    COBERTURA %in% c("Caña") ~ "Sugar cane",
+    TRUE ~ "FAIL")) %>%
+  ## Append the cost data
+  left_join(Opp_costs, by = c("Opp_cost_product_match" = "Product")) %>%
+  ## add the m2 polygon area
+  mutate(Patch_area_m2 = as.vector(st_area(Road_Edge_LandUse)),
+         ## assume no vegatation areas have a cost of zero?
+         #Net_USD_m2 = ifelse(COBERTURA == "Areas abiertas sin vegetacion", 0, Net_USD_m2)
+         Annual_opp_cost = Patch_area_m2 * Net_USD_m2)
+```
+
+\
+Which we can summarise to better see the size of the areas associated with cheaper/more expensive opportunity costs. Currently the example department only has 3 levels of net revenue per m2 (coffee, pasture and banana, which in a hierarchy of costs represent high, medium and low).
+
+In this example areas with very high susceptibility (rated 5) are almost evenly split between high (395,446.1 m2) and low (328,585.4 m2) opportunity cost buffer areas. However, these very high susceptibility areas cover a vastly smaller area than medium (rated 3) and high susceptibility areas. In these areas low cost areas dominate occupying 158,596,537.49 m2 and 52,073,287.62 m2 respectively for medium and high.
+
+\
+```{r, message=F, warning=F}
+SUSCEP_by_Cost <- Road_Edge_LandUseCost %>% as.data.frame() %>%
+  group_by(SUSCEP, Net_USD_m2) %>% tally(Patch_area_m2) %>%
+  filter(!is.na(Net_USD_m2)) %>%
+  mutate(Cost_band = case_when(Net_USD_m2 == 0.0075 ~ "Low",
+                               Net_USD_m2 == 0.0122 ~ "Medium",
+                               Net_USD_m2 == 0.047 ~ "High",
+                               TRUE ~ "CHECK MISSING COSTS"))
+```
+
+```{r, message=F, warning=F, echo=FALSE, fig.width = 5, fig.height = 5}
+#SUSCEP_by_Cost %>% filter(Cost_band == "Low")
+
+ggplot(SUSCEP_by_Cost, aes(SUSCEP, n, fill = Cost_band)) +
+  geom_col() +
+  scale_fill_manual(values = c("tomato", "chartreuse3", "yellow3")) +
+  xlab("Landslide susceptibility") +
+  ylab("Total area (m2)") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom", legend.title = element_blank())
+```
+***Figure 6.*** *Opportunity cost of the land area with each level of landslide susceptibility.*
+\
+
+## Prioritising specific projects or low cost - high susceptibility areas
+
+The next step is  identifying the cost-effectiveness of both:
+1. Projects that could potentially be deemed strictly necessary  e.g.reducing the landslide risk for a key national ride that currently suffers extensively from land slides. Subsequently termed ***Necessity projects***.
+2. Maximising the roadside land area reforested in high risk areas for the lowest economic cost. Subsequently termed ***Win-win prioritization***.
+
+Figure 7 shows the two dimensions to this landslide susceptibility and the associated opportunity costs for foregoing productive cropping/pasture in buffer area.
+
+We currently compare the opportunity cost of re/afforestation with the costs of replacement from Grima et al. (2020), for pipelines this would \$44,600 per km of 18 inch pipe, for powerlines this is $75,300 per km (but varies across materials) and for roads the cost is \$650,262 per km. We note a few issues with these prices that could be improved upon:
+
+1) Again these are out of date for a 2023 analysis and if new prices could be sourced or soured to a greater resolution e.g. different prices per road width etc. 
+
+2) These are the prices to construct this infrastructure in the first place rather than to repair it following a landslide. Some landslides wll destroy roads and necessitate completely rebuilding the road, but others may just cover the road with debris and cause smaller amounts of attrition to the road condition. In these cases the cost of repair would be the costs of clearing the debris, resurfacing any damaged road surface and the cost of lost revenue due to road closures. The second of these could be incredibly costly but is also comparatively hard to quantify.
+
+\
+```{r, message=F, warning=F, echo=FALSE, fig.width = 5, fig.height = 5}
+Cost_by_Sus_plot <- ggplot() + 
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = "white") + 
+  geom_sf(data = Roads_Ant_mask , aes(geometry = geometry), colour = "black") +
+  geom_sf(data = filter(Road_Edge_LandUseCost, !is.na(Net_USD_m2)), 
+         aes(geometry = geometry, fill = as.factor(Net_USD_m2)), colour = NA) +
+  geom_sf(data = filter(Road_Edge_LandUseCost, Cover == "Forest"), 
+         aes(geometry = geometry), fill = "darkgreen", colour = NA) +
+  coord_sf(xlim = c(912000, 927000), ylim = c(1143000, 1150000), crs = CRS, datum = CRS) +
+  scale_fill_manual(values = c("chartreuse3", "yellow3", "tomato"),
+                    labels = c("Low", "Medium", "High")) +
+  facet_wrap(~SUSCEP, ncol = 1) +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+Opp_cost_Ant_plot <- ggplot() + 
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia")) + 
+  geom_sf(data = filter(Road_Edge_LandUseCost, !is.na(Net_USD_m2)), 
+          aes(geometry = geometry, fill = as.factor(Net_USD_m2)), colour = NA) +
+  geom_sf(data = filter(Road_Edge_LandUseCost, Cover == "Forest"), 
+          aes(geometry = geometry), fill = "darkgreen", colour = NA) +
+  scale_fill_manual(values = c("chartreuse3", "yellow3", "tomato"),
+                    labels = c("Low", "Medium", "High")) +
+  #facet_wrap(~SUSCEP, ncol = 1) +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+Suscep_Ant_plot <- ggplot() + 
+  geom_sf(data = filter(Departments, NAME_1 == "Antioquia")) +
+  geom_sf(data = Road_Edge_LandUseCost, aes(fill = as.factor(SUSCEP)), colour = NA)  +
+  scale_fill_viridis_d("Susceptibility", option = "inferno", direction = -1) +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+ggarrange(Cost_by_Sus_plot, labels = c("A.", ""), ncol = 2,
+          ggarrange(Suscep_Ant_plot, Opp_cost_Ant_plot, ncol =1, labels = c("B.", "C.")))
+
+```
+***Figure 7.*** *Opportunity cost and susceptibility. A. Example road and buffer area with the opportunity costs for each areas land slide susceptibility. B. Department level susceptibility for reference. C. Department level opportunity cost.*
+
+\
+***Necessity projects***
+
+We can identify the road with greatest landslide susceptibility - we measure this as the highest average susceptibility per m2 of the road and 150m either side of the road.
+
+```{r, message=F, warning=F}
+Road_ave_SUSCEP <- Roads_Ant_mask2 %>% as.data.frame() %>% 
+  mutate(Road_and_buffer_area = as.vector(st_area(Roads_Ant_mask2)),
+         Road_and_buffer_area_SUSCEP = Road_and_buffer_area*SUSCEP) %>%
+  group_by(codigo_via) %>%
+  summarise(Average_SUSCEP_m2 = sum(Road_and_buffer_area_SUSCEP) / sum(Road_and_buffer_area)) %>%
+  arrange(Average_SUSCEP_m2)
+```
+
+\
+This highlights the codigo via 6203 as having the highest susceptibility with the average susceptibility along its length being 3.68 (medium to high).We can then extract that road from our opportunity cost and susceptibilty layer of the buffered road network.
+
+\
+```{r, message=F, warning=F}
+Proj_6203 <- st_intersection(filter(Roads_Ant_mask2, codigo_via == 6203), Road_Edge_LandUseCost) %>% 
+  st_make_valid()
+```
+
+\
+```{r, message=F, warning=F, echo=FALSE, fig.width = 6, fig.height = 6}
+## Visualise the road
+Road6203 <- ggplot() + 
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia")) + 
+  geom_sf(data = Roads_Ant_mask2, 
+          aes(geometry = geometry)) +
+  geom_sf(data = filter(Roads_Ant_mask2, codigo_via == 6203), 
+          aes(geometry = geometry), fill = "red", colour = "red") +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+Road6203_OC <- ggplot() + 
+  #geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = "white") + 
+  #geom_sf(data = Roads_Ant_mask , aes(geometry = geometry), colour = "black") +
+  geom_sf(data = filter(Proj_6203), 
+          aes(geometry = geometry, fill = as.factor(Net_USD_m2)), colour = NA) +
+  scale_fill_manual(values = c("chartreuse3", "tomato", "grey"),
+                    labels = c("Low", "High", "Water/grassland/forest")) +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.position = "bottom")
+
+ggarrange(Road6203, Road6203_OC, labels = c("A.", "B."), ncol = 2)
+```
+***Figure 8.*** *Assuming the 6203 is a Necessity project. A. Highlight the road. B. Opportunity cost along the 6203.*
+
+\
+We can calculate the length of the road as being just under 114km long, and then using the cost data from Table 2 (Grima et al. 2020) we can assume replacing a km of road costs $650,262, so scaling that up gives a total cost of just over 74 million dollars to fully replace the network.
+
+Further work at this point would need to consider more small scale costs e.g. assuming road sections aren't destroyed by landslide but rather blocked or damaged, this then has its own different at least three stage cost 1) cost of clearance, 2) cost of repairs and 3) economic activity foregone by the disruption (e.g. workers not making it too work). 
+
+When we consider the opportunity cost of reforesting the entire length of the 6203 the annual cost comes out as $3,688,812. So based on the current assumptions (if we ignore future discounting and inflation through time) reforestation would be cost effective for the 6203 if we expected it to be fully destroyed every 20-years. A further possible issue is currently we assume no implementation costs for reforestation which is unlikely, the costs are likely to be relatively small compared to the forfeited income, but should still form part of the opportunity cost.
+
+```{r, message=F, warning=F}
+
+## 114km of road
+Length_6203 <- st_length(filter(Roads_Ant_mask, codigo_via == 6203)) %>% sum() /1000
+
+## Using Nelsons costs prices for a small road based off 2017 prices
+Replace_6203 <- as.vector(Length_6203) * 650262 # $74,128,819 to replace the road.
+
+## Annual opportunity cost $3,688,812
+OC_6203 <- Proj_6203 %>% as.data.frame() %>% filter(!is.na(Annual_opp_cost)) %>% 
+  summarise(sum(Annual_opp_cost))
+
+Years <- 74128819/3688812
+```

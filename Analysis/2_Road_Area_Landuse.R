@@ -377,5 +377,17 @@ ggplot() +
 st_area(Test_sf) %>% sum()
 st_area(shp)
 
+## Get elevation data
 elev <- elevatr::get_elev_raster(Ant_Landuse, src = "aws", crs = CRS, z = 12)
-elev_sf <- as(elev,'SpatialPolygonsDataFrame') %>% st_as_sf()
+elev_sr <- rast(elev)
+
+Ant_elev <- extract(elev_sr, vect(filter(Dep_Ras, NAME_1 == "Antioquia")))
+
+Ant_elev <- raster::extract(elev, filter(Dep_Ras, NAME_1 == "Antioquia"))
+elev_ant <- rast(Ant_elev)
+
+ggplot() +
+  geom_spatraster(data = elev_sr, maxcell = 10000)+
+  scale_fill_viridis_c() +
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = NA, colour = "red")
+

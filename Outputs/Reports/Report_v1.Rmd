@@ -98,6 +98,8 @@ ggarrange(Road_area_buffer, Road_edge_buffer, nrow = 1, ncol = 2, labels = c("A.
 
 Convert the departmental susceptibility raster layer to an sf object and reset the CRS to as previous (no transformation necessary as it was already transformed). Then trim the susceptibility layer to 1) the road area plus the buffer for understanding the road and surrounding area risk (30m wide road + 150m buffer either side) and 2) just to the road edge buffer (just the 150m either side of the road) for calculated proportion of forested road side and the opportunity cost.
 
+Now currently we buffer both sides of the road regardless of elevation and aspect - this is the most precautionary approach as it assumes that reforesting both sides of the road is the most effective path to risk aversion, in some cases where the road is in a valley this is also the logical choice. But where the road is on a slope the landslide risk likely comes from only the upward aspect - whether there are additional benefits to be obtained from the reforestation of the lower aspect that we are also interested in remains an open question and something to discuss.
+
 \
 ```{r, message=F, warning=F, eval=FALSE}
 Spdf_Ant <- as.polygons(Antioquia) %>% st_as_sf()
@@ -556,6 +558,7 @@ Further work at this point would need to consider more small scale costs e.g. as
 
 When we consider the opportunity cost of reforesting the entire length of the 6203 the annual cost comes out as $3,688,812. So based on the current assumptions (if we ignore future discounting and inflation through time) reforestation would be cost effective for the 6203 if we expected it to be fully destroyed every 20-years. A further possible issue is currently we assume no implementation costs for reforestation which is unlikely, the costs are likely to be relatively small compared to the forfeited income, but should still form part of the opportunity cost.
 
+\
 ```{r, message=F, warning=F}
 
 ## 114km of road
@@ -568,5 +571,67 @@ Replace_6203 <- as.vector(Length_6203) * 650262 # $74,128,819 to replace the roa
 OC_6203 <- Proj_6203 %>% as.data.frame() %>% filter(!is.na(Annual_opp_cost)) %>% 
   summarise(sum(Annual_opp_cost))
 
-Years <- 74128819/3688812
+Years <- 74128819/3688812 # 20.09558
 ```
+
+/
+
+***Win-win prioritization***
+
+Necessity projects involve the targeted restoration of a given area based on a criteria, like above we did it for a stretch of road with the highest susceptibility. But often we might want to know where are the win win areas for restoration (areas that have a high susceptibility and low cost). There are a number of things to consider first:
+
+#### Policy consideration - Issue 1 ####
+* Is the aim to maximize risk averted or maximize land area covered? Maximizing risk aversion would mean that reducing the risk of all category 5 areas would be the highest priority starting with lowest cost and then working up the cost bracket. Once all category 5 areas had been considered the process would repeat for category 4 areas. To maximize land area the largest blocks of land with the cheapest cost would be prioritized regardless of susceptibility. Although concessions could be made to maximize the land area but exclude areas with a susceptibility of 1 or 2, or even just to focus on land maximization for categories 4 and 5.
+
+#### Ecological considerations - Issue 2 ####
+* Is there any point in restoring a single fragment (30 x 30m) of low cost land in a high susceptibility area if the surrounding buffer area is left productive as it falls into a higher cost bracket. Do we get any benefit from that small fragment? Similarly is there any logic to reforesting a large area and leaving a single fragment as productive - that land would be harder to access now and maybe no longer viable as an income source.
+
+#### Geological considerations - Issue 3 ####
+* The buffer zone is made up of cells with varying susceptibility and opportunity costs, but what if part of the buffer zone (say half the width) is category 5 and the other category 3. A prioritization approach might only favor the category 5 area around the road, so then what exactly is *"enough"* forested buffer area around a road? Of course if we can deduce or approximate a better answer to that question we can adjust the whole buffer accordingly, so if 120m is needed for a detectable (or X% decrease in landslide susceptibility) then we can use that as the buffer and ensure the whole buffer is forested.
+
+**Current Approach**
+
+So at the simplest level we can focus on the most susceptible areas (category 4 and 5) - this feeds directly into Issue 1 (how to prioritize). This reveals that of the land area with high or very high susceptibility 56.6% of it within 150m of roads can be reforested at low cost. Overall this accounts for 13% of the whole buffer area within 150m of roads (regardless of susceptibility).
+
+\
+```{r, message=F, warning=F}
+
+Productive_roadside_area <- sum(SUSCEP_by_Cost$n) # 382,224,910 m2 productive area 
+
+## Protect all low cost high and high susceptibility buffer areas
+Min1_poly <- Road_Edge_LandUseCost %>%
+  mutate(Cost_band = case_when(Net_USD_m2 == 0.0075 ~ "Low",
+                               Net_USD_m2 == 0.0122 ~ "Medium",
+                               Net_USD_m2 == 0.047 ~ "High",
+                               TRUE ~ "CHECK MISSING COSTS")) %>% 
+  filter(SUSCEP %in% c("4", "5"), Cost_band == "Low")
+
+## 56.6% of the surrounding road area with 4 or 5 suscep
+High_risk <- st_area(Min1_poly) %>% sum() / filter(SUSCEP_by_Cost, SUSCEP %in% c(4, 5))$n %>% sum() 
+## 13.7% of the total surrounding road area
+All <- st_area(Min1_poly) %>% sum() / Productive_roadside_area
+```
+\
+
+From this we can see that the high susceptibility - low cost approach largely does connect existing forest patches to creates an almost intact forest buffer area (across the whole 150m area in some parts). But we can also see that it creates some very small fragments of land with slightly lower susceptibility that is not prioritized. This shows Issue 2 - is this prioritization working or is it simply illogical to leave such small fragments of land. LIkewise we can see small fragmented area's that are prioritized surrounded by productive land, which also is likely a waste of resources. Similarly, where the buffer reaches less than 150m away from the road is this sufficient, is there a set area perpendicular to a road that must always be reforested for it to be effective (probably yes - but probably not known, and this illustrates Issue 3).
+
+
+```{r, message=F, warning=F, echo=FALSE, fig.width = 6, fig.height = 4}
+Buffer_edge <- st_union(Road_Edge_LandUseCost)
+
+ggplot() + 
+  geom_sf(data = filter(Dep_Ras, NAME_1 == "Antioquia"), fill = "white") + 
+  geom_sf(data = Buffer_edge, aes(geometry = geometry), fill = NA, colour = "black") +
+  geom_sf(data = Roads_Ant_mask , aes(geometry = geometry), colour = "black") +
+  geom_sf(data = filter(Road_Edge_LandUseCost, Cover == "Productive"), 
+          aes(geometry = geometry), fill = "yellow4", colour = NA) +
+  geom_sf(data = filter(Min1_poly), 
+          aes(geometry = geometry, fill = as.factor(Net_USD_m2)), colour = NA, fill = "chartreuse3") +
+  geom_sf(data = filter(Road_Edge_LandUseCost, Cover == "Forest"), 
+          aes(geometry = geometry), fill = "darkgreen", colour = NA) +
+  geom_sf(data = filter(Road_Edge_LandUseCost, Cover == "Water-based"), 
+          aes(geometry = geometry), fill = "dodgerblue", colour = NA) +
+  coord_sf(xlim = c(912000, 916000), ylim = c(1144000, 1146000), crs = CRS, datum = CRS) +
+  theme_void()
+```
+***Figure 9.*** *Example showing the areas that would and wouldn't be prioritized under this high susceptibility - low cost approach. Blue shows waterways, dark green shows forest and light green shows the prioritized areas and browns shows the productive areas that are not prioritized.*
